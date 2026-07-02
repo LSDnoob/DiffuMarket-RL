@@ -9,6 +9,7 @@ BINANCE_WSS_ENDPOINT = "wss://fstream.binance.com/public/ws/btcusdt@depth"
 
 import websockets
 from feature_compiler import MicrostructureFeatureCompiler
+from inference_worker import GPUInferenceWorker
 
 class MarketDataEngine:
     def __init__(self, target_depth=20):
@@ -18,9 +19,16 @@ class MarketDataEngine:
         
         # Instantiate the modular mathematical matrix compiler
         self.compiler = MicrostructureFeatureCompiler(price_levels=20, time_steps=50)
+
+        # Initialize the hardware-accelerated GPU inference session
+        self.gpu_worker = GPUInferenceWorker(model_path="microstructure_cnn.onnx")
+
+        # Storage parameters for latest calculated tracking vectors
+        self.latest_signal = "NEUTRAL"
+        self.latest_confidence = 0.0
+        self.inference_latency_ms = 0.0
         
         self.message_count = 0
-        self.start_time = time.time()
         self.last_metrics_dump = time.time()
 
     def update_book(self, side, price, quantity):
@@ -36,6 +44,9 @@ class MarketDataEngine:
         return sorted_bids, sorted_asks
 
     async def log_performance(self):
+        """Monitors system parameters, listing calculations and GPU inference results."""
+        signal_labels = {0: "🛑 SELL / DOWN", 1: "⏳ NEUTRAL", 2: "🚀 BUY / UP"}
+
         while True:
             await asyncio.sleep(1.0)
             now = time.time()
@@ -43,23 +54,21 @@ class MarketDataEngine:
             
             if elapsed >= 1.0:
                 msg_per_sec = self.message_count / elapsed
-                top_bids, top_asks = self.get_top_depth()
                 
-                best_bid = top_bids[0][0] if top_bids else 0.0
-                best_ask = top_asks[0][0] if top_asks else 0.0
-                spread = best_ask - best_bid
-                
-                print(f"\n--- [Metrics Engine] ---")
-                print(f"Throughput    : {msg_per_sec:.2f} msg/sec")
-                print(f"Total Parsed  : {self.message_count}")
-                print(f"Best Bid/Ask  : {best_bid:.2f} / {best_ask:.2f} (Spread: {spread:.2f})")
-                print(f"Book Levels   : Bids={len(self.bids)} | Asks={len(self.asks)}")
-                print(f"------------------------")
-                
+                print(f"\n--- [Quant System Metrics Engine] ---")
+                print(f"Data Throughput     : {msg_per_sec:.2f} ticks/sec")
+                print(f"AI Prediction Signal: {self.latest_signal}")
+                print(f"Model Confidence    : {self.latest_confidence * 100:.2f}%")
+                print(f"GPU Core Latency    : {self.inference_latency_ms:.2f} ms")
+                print(f"--------------------------------------")
+
                 self.message_count = 0
                 self.last_metrics_dump = now
 
     async def stream_market_data(self):
+        signal_map = {0: "🛑 SELL / DOWN", 1: "⏳ NEUTRAL", 2: "🚀 BUY / UP"}
+        print(f"Opening network socket layer connection to exchange...")
+        
         # Force exact connection to the root endpoint string literal
         uri_target = str(BINANCE_WSS_ENDPOINT).strip()
         print(f"Opening network layer connection to: {uri_target}")
@@ -82,11 +91,21 @@ class MarketDataEngine:
                     # Convert pricing dictionaries to sorted structures for the feature compiler
                     top_bids, top_asks = self.get_top_depth()
                     if len(top_bids) == self.target_depth and len(top_asks) == self.target_depth:
-                        # Stream parsed structures into mathematical numpy vectors
+                        # 1. Compile mathematical tensor matrices on the CPU
                         live_tensor = self.compiler.compile_tensor_frame(top_bids, top_asks)
-                        
-                        if self.message_count % 5 == 0 and live_tensor is not None:
-                            print(f"[Compiler State] Formed Input Tensor Image Matrix -> Shape: {live_tensor.shape}", end='\r')
+
+                        if live_tensor is not None:
+                            # 2. Measure exactly how fast the GPU processes the math matrix
+                            start_inf = time.perf_counter()
+                            
+                            class_id, conf = self.gpu_worker.predict_signal(live_tensor)
+                            
+                            end_inf = time.perf_counter()
+                            
+                            # Update system global metrics
+                            self.latest_signal = signal_map[class_id]
+                            self.latest_confidence = conf
+                            self.inference_latency_ms = (end_inf - start_inf) * 1000
 
                 except websockets.exceptions.ConnectionClosed:
                     print("\nConnection dropped. Re-establishing socket socket session...")
@@ -106,4 +125,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(engine.start())
     except KeyboardInterrupt:
-        print("\nEngine safely terminated by user request.")
+        print("\nPipeline terminated safely")
